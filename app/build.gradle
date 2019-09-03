@@ -1,15 +1,14 @@
 apply plugin: 'com.android.application'
 
 android {
-    buildToolsVersion '28.0.3'
-    compileSdkVersion 28
+    compileSdkVersion 29
 
     defaultConfig {
         minSdkVersion 16
-        targetSdkVersion 28
+        targetSdkVersion 29
 
-        versionName "7.3.1"
-        versionCode = 194
+        versionName "8.2"
+        versionCode = 199
     }
 
     flavorDimensions "root"
@@ -44,6 +43,7 @@ android {
 
     lintOptions {
         disable 'MissingTranslation'
+        lintConfig file("lint.xml")
     }
 
     bundle {
@@ -114,9 +114,10 @@ android {
 }
 
 dependencies {
-    implementation 'org.bouncycastle:bcprov-jdk15on:1.59'
-    implementation 'org.bouncycastle:bcpkix-jdk15on:1.59'
+    implementation 'org.bouncycastle:bcprov-jdk15on:1.62'
+    implementation 'org.bouncycastle:bcpkix-jdk15on:1.62'
     implementation 'org.jcodec:jcodec:0.2.3'
-
-    implementation project(':moonlight-common')
+    implementation 'com.squareup.okhttp3:okhttp:3.12.3'
+    implementation 'com.squareup.okio:okio:1.17.4'
+    implementation 'org.jmdns:jmdns:3.5.5'
 }

@@ -3,6 +3,7 @@ package com.limelight.computers;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.StringReader;
+import java.net.Inet4Address;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.HashSet;
@@ -220,12 +221,12 @@ public class ComputerManagerService extends Service {
             }
         }
 
-        public boolean addComputerBlocking(String addr, boolean manuallyAdded) {
-            return ComputerManagerService.this.addComputerBlocking(addr, manuallyAdded);
+        public boolean addComputerBlocking(ComputerDetails fakeDetails) {
+            return ComputerManagerService.this.addComputerBlocking(fakeDetails);
         }
 
-        public void removeComputer(String name) {
-            ComputerManagerService.this.removeComputer(name);
+        public void removeComputer(ComputerDetails computer) {
+            ComputerManagerService.this.removeComputer(computer);
         }
 
         public void stopPolling() {
@@ -297,8 +298,27 @@ public class ComputerManagerService extends Service {
         return new MdnsDiscoveryListener() {
             @Override
             public void notifyComputerAdded(MdnsComputer computer) {
+                ComputerDetails details = new ComputerDetails();
+
+                // Populate the computer template with mDNS info
+                if (computer.getLocalAddress() != null) {
+                    details.localAddress = computer.getLocalAddress().getHostAddress();
+
+                    // Since we're on the same network, we can use STUN to find
+                    // our WAN address, which is also very likely the WAN address
+                    // of the PC. We can use this later to connect remotely.
+                    if (computer.getLocalAddress() instanceof Inet4Address) {
+                        details.remoteAddress = NvConnection.findExternalAddressForMdns("stun.moonlight-stream.org", 3478);
+                    }
+                }
+                if (computer.getIpv6Address() != null) {
+                    details.ipv6Address = computer.getIpv6Address().getHostAddress();
+                }
+
                 // Kick off a serverinfo poll on this machine
-                addComputerBlocking(computer.getAddress().getHostAddress(), false);
+                if (!addComputerBlocking(details)) {
+                    LimeLog.warning("Auto-discovered PC failed to respond: "+details);
+                }
             }
 
             @Override
@@ -345,24 +365,7 @@ public class ComputerManagerService extends Service {
         }
     }
 
-    public boolean addComputerBlocking(String addr, boolean manuallyAdded) {
-        // Setup a placeholder
-        ComputerDetails fakeDetails = new ComputerDetails();
-
-        if (manuallyAdded) {
-            // Add PC UI
-            fakeDetails.manualAddress = addr;
-        }
-        else {
-            // mDNS
-            fakeDetails.localAddress = addr;
-
-            // Since we're on the same network, we can use STUN to find
-            // our WAN address, which is also very likely the WAN address
-            // of the PC. We can use this later to connect remotely.
-            fakeDetails.remoteAddress = NvConnection.findExternalAddressForMdns("stun.moonlight-stream.org", 3478);
-        }
-
+    public boolean addComputerBlocking(ComputerDetails fakeDetails) {
         // Block while we try to fill the details
         try {
             // We cannot use runPoll() here because it will attempt to persist the state of the machine
@@ -395,26 +398,22 @@ public class ComputerManagerService extends Service {
             return true;
         }
         else {
-            if (!manuallyAdded) {
-                LimeLog.warning("Auto-discovered PC failed to respond: "+addr);
-            }
-
             return false;
         }
     }
 
-    public void removeComputer(String name) {
+    public void removeComputer(ComputerDetails computer) {
         if (!getLocalDatabaseReference()) {
             return;
         }
 
         // Remove it from the database
-        dbManager.deleteComputer(name);
+        dbManager.deleteComputer(computer);
 
         synchronized (pollingTuples) {
             // Remove the computer from the computer list
             for (PollingTuple tuple : pollingTuples) {
-                if (tuple.computer.name.equals(name)) {
+                if (tuple.computer.uuid.equals(computer.uuid)) {
                     if (tuple.thread != null) {
                         // Interrupt the thread on this entry
                         tuple.thread.interrupt();
@@ -514,14 +513,16 @@ public class ComputerManagerService extends Service {
         t.start();
     }
 
-    private String fastPollPc(final String localAddress, final String remoteAddress, final String manualAddress) throws InterruptedException {
+    private String fastPollPc(final String localAddress, final String remoteAddress, final String manualAddress, final String ipv6Address) throws InterruptedException {
         final boolean[] remoteInfo = new boolean[2];
         final boolean[] localInfo = new boolean[2];
         final boolean[] manualInfo = new boolean[2];
+        final boolean[] ipv6Info = new boolean[2];
 
         startFastPollThread(localAddress, localInfo);
         startFastPollThread(remoteAddress, remoteInfo);
         startFastPollThread(manualAddress, manualInfo);
+        startFastPollThread(ipv6Address, ipv6Info);
 
         // Check local first
         synchronized (localInfo) {
@@ -545,7 +546,7 @@ public class ComputerManagerService extends Service {
             }
         }
 
-        // And finally, remote
+        // Now remote IPv4
         synchronized (remoteInfo) {
             while (!remoteInfo[0]) {
                 remoteInfo.wait(500);
@@ -553,6 +554,17 @@ public class ComputerManagerService extends Service {
 
             if (remoteInfo[1]) {
                 return remoteAddress;
+            }
+        }
+
+        // Now global IPv6
+        synchronized (ipv6Info) {
+            while (!ipv6Info[0]) {
+                ipv6Info.wait(500);
+            }
+
+            if (ipv6Info[1]) {
+                return ipv6Address;
             }
         }
 
@@ -566,8 +578,8 @@ public class ComputerManagerService extends Service {
         // Do not write this address to details.activeAddress because:
         // a) it's only a candidate and may be wrong (multiple PCs behind a single router)
         // b) if it's null, it will be unexpectedly nulling the activeAddress of a possibly online PC
-        LimeLog.info("Starting fast poll for "+details.name+" ("+details.localAddress +", "+details.remoteAddress +", "+details.manualAddress +")");
-        String candidateAddress = fastPollPc(details.localAddress, details.remoteAddress, details.manualAddress);
+        LimeLog.info("Starting fast poll for "+details.name+" ("+details.localAddress +", "+details.remoteAddress +", "+details.manualAddress+", "+details.ipv6Address+")");
+        String candidateAddress = fastPollPc(details.localAddress, details.remoteAddress, details.manualAddress, details.ipv6Address);
         LimeLog.info("Fast poll for "+details.name+" returned candidate address: "+candidateAddress);
 
         // If no connection could be established to either IP address, there's nothing we can do
@@ -582,8 +594,9 @@ public class ComputerManagerService extends Service {
             // already tried
             HashSet<String> uniqueAddresses = new HashSet<>();
             uniqueAddresses.add(details.localAddress);
-            uniqueAddresses.add(details.remoteAddress);
             uniqueAddresses.add(details.manualAddress);
+            uniqueAddresses.add(details.remoteAddress);
+            uniqueAddresses.add(details.ipv6Address);
             for (String addr : uniqueAddresses) {
                 if (addr == null || addr.equals(candidateAddress)) {
                     continue;

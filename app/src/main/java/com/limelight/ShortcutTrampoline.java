@@ -23,13 +23,11 @@ import java.util.UUID;
 
 public class ShortcutTrampoline extends Activity {
     private String uuidString;
-    private String appIdString;
+    private NvApp app;
     private ArrayList<Intent> intentStack = new ArrayList<>();
 
     private ComputerDetails computer;
     private SpinnerDialog blockingLoadSpinner;
-
-    public final static String APP_ID_EXTRA = "AppId";
 
     private ComputerManagerService.ComputerManagerBinder managerBinder;
     private final ServiceConnection serviceConnection = new ServiceConnection() {
@@ -101,10 +99,9 @@ public class ShortcutTrampoline extends Activity {
                                         if (details.state == ComputerDetails.State.ONLINE && details.pairState == PairingManager.PairState.PAIRED) {
                                             
                                             // Launch game if provided app ID, otherwise launch app view
-                                            if (appIdString != null && appIdString.length() > 0) {
-                                                if (details.runningGameId == 0 || details.runningGameId == Integer.parseInt(appIdString)) {
-                                                    intentStack.add(ServerHelper.createStartIntent(ShortcutTrampoline.this,
-                                                            new NvApp("app", Integer.parseInt(appIdString), false), details, managerBinder));
+                                            if (app != null) {
+                                                if (details.runningGameId == 0 || details.runningGameId == app.getAppId()) {
+                                                    intentStack.add(ServerHelper.createStartIntent(ShortcutTrampoline.this, app, details, managerBinder));
 
                                                     // Close this activity
                                                     finish();
@@ -114,8 +111,7 @@ public class ShortcutTrampoline extends Activity {
                                                 } else {
                                                     // Create the start intent immediately, so we can safely unbind the managerBinder
                                                     // below before we return.
-                                                    final Intent startIntent = ServerHelper.createStartIntent(ShortcutTrampoline.this,
-                                                            new NvApp("app", Integer.parseInt(appIdString), false), details, managerBinder);
+                                                    final Intent startIntent = ServerHelper.createStartIntent(ShortcutTrampoline.this, app, details, managerBinder);
 
                                                     UiHelper.displayQuitConfirmationDialog(ShortcutTrampoline.this, new Runnable() {
                                                         @Override
@@ -155,7 +151,7 @@ public class ShortcutTrampoline extends Activity {
                                                 // If a game is running, we'll make the stream the top level activity
                                                 if (details.runningGameId != 0) {
                                                     intentStack.add(ServerHelper.createStartIntent(ShortcutTrampoline.this,
-                                                            new NvApp("app", details.runningGameId, false), details, managerBinder));
+                                                            new NvApp(null, details.runningGameId, false), details, managerBinder));
                                                 }
 
                                                 // Now start the activities
@@ -198,7 +194,7 @@ public class ShortcutTrampoline extends Activity {
         }
     };
 
-    protected boolean validateInput() {
+    protected boolean validateInput(String uuidString, String appIdString) {
         // Validate UUID
         if (uuidString == null) {
             Dialog.displayDialog(ShortcutTrampoline.this,
@@ -240,10 +236,16 @@ public class ShortcutTrampoline extends Activity {
 
         UiHelper.notifyNewRootView(this);
 
+        String appIdString = getIntent().getStringExtra(Game.EXTRA_APP_ID);
         uuidString = getIntent().getStringExtra(AppView.UUID_EXTRA);
-        appIdString = getIntent().getStringExtra(APP_ID_EXTRA);
 
-        if (validateInput()) {
+        if (validateInput(uuidString, appIdString)) {
+            if (appIdString != null && !appIdString.isEmpty()) {
+                app = new NvApp(getIntent().getStringExtra(Game.EXTRA_APP_NAME),
+                        Integer.parseInt(appIdString),
+                        getIntent().getBooleanExtra(Game.EXTRA_APP_HDR, false));
+            }
+
             // Bind to the computer manager service
             bindService(new Intent(this, ComputerManagerService.class), serviceConnection,
                     Service.BIND_AUTO_CREATE);

@@ -9,6 +9,7 @@ import com.limelight.binding.crypto.AndroidCryptoProvider;
 import com.limelight.computers.ComputerManagerListener;
 import com.limelight.computers.ComputerManagerService;
 import com.limelight.grid.PcGridAdapter;
+import com.limelight.grid.assets.DiskAssetLoader;
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.NvApp;
 import com.limelight.nvstream.http.NvHTTP;
@@ -440,7 +441,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
 
                         if (toastSuccess) {
                             // Open the app list after a successful pairing attempt
-                            doAppList(computer);
+                            doAppList(computer, true);
                         }
                         else {
                             // Start polling again if we're still in the foreground
@@ -539,7 +540,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         }).start();
     }
 
-    private void doAppList(ComputerDetails computer) {
+    private void doAppList(ComputerDetails computer, boolean newlyPaired) {
         if (computer.state == ComputerDetails.State.OFFLINE) {
             Toast.makeText(PcView.this, getResources().getString(R.string.error_pc_offline), Toast.LENGTH_SHORT).show();
             return;
@@ -552,6 +553,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
         Intent i = new Intent(this, AppView.class);
         i.putExtra(AppView.NAME_EXTRA, computer.name);
         i.putExtra(AppView.UUID_EXTRA, computer.uuid);
+        i.putExtra(AppView.NEW_PAIR_EXTRA, newlyPaired);
         startActivity(i);
     }
 
@@ -584,14 +586,13 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                             Toast.makeText(PcView.this, getResources().getString(R.string.error_manager_not_running), Toast.LENGTH_LONG).show();
                             return;
                         }
-                        managerBinder.removeComputer(computer.details.name);
                         removeComputer(computer.details);
                     }
                 }, null);
                 return true;
 
             case APP_LIST_ID:
-                doAppList(computer.details);
+                doAppList(computer.details, false);
                 return true;
 
             case RESUME_ID:
@@ -629,12 +630,16 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
     }
     
     private void removeComputer(ComputerDetails details) {
+        managerBinder.removeComputer(details);
+
+        new DiskAssetLoader(this).deleteAssetsForComputer(details.uuid);
+
         for (int i = 0; i < pcGridAdapter.getCount(); i++) {
             ComputerObject computer = (ComputerObject) pcGridAdapter.getItem(i);
 
             if (details.equals(computer.details)) {
                 // Disable or delete shortcuts referencing this PC
-                shortcutHelper.disableShortcut(details.uuid,
+                shortcutHelper.disableComputerShortcut(details,
                         getResources().getString(R.string.scut_deleted_pc));
 
                 pcGridAdapter.removeComputer(computer);
@@ -665,7 +670,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
 
         // Add a launcher shortcut for this PC
         if (details.pairState == PairState.PAIRED) {
-            shortcutHelper.createAppViewShortcut(details.uuid, details, false);
+            shortcutHelper.createAppViewShortcutForOnlineHost(details);
         }
 
         if (existingEntry != null) {
@@ -707,10 +712,11 @@ public class PcView extends Activity implements AdapterFragmentCallbacks {
                     // Pair an unpaired machine by default
                     doPair(computer.details);
                 } else {
-                    doAppList(computer.details);
+                    doAppList(computer.details, false);
                 }
             }
         });
+        UiHelper.applyStatusBarPadding(listView);
         registerForContextMenu(listView);
     }
 

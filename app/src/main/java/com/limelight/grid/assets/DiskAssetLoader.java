@@ -65,7 +65,7 @@ public class DiskAssetLoader {
     }
 
     public Bitmap loadBitmapFromCache(CachedAppAssetLoader.LoaderTuple tuple, int sampleSize) {
-        File file = CacheHelper.openPath(false, cacheDir, "boxart", tuple.computer.uuid, tuple.app.getAppId() + ".png");
+        File file = getFile(tuple.computer.uuid, tuple.app.getAppId());
 
         // Don't bother with anything if it doesn't exist
         if (!file.exists()) {
@@ -131,6 +131,20 @@ public class DiskAssetLoader {
         }
 
         return bmp;
+    }
+
+    public File getFile(String computerUuid, int appId) {
+        return CacheHelper.openPath(false, cacheDir, "boxart", computerUuid, appId + ".png");
+    }
+
+    public void deleteAssetsForComputer(String computerUuid) {
+        File dir = CacheHelper.openPath(false, cacheDir, "boxart", computerUuid);
+        File[] files = dir.listFiles();
+        if (files != null) {
+            for (File f : files) {
+                f.delete();
+            }
+        }
     }
 
     public void populateCacheWithStream(CachedAppAssetLoader.LoaderTuple tuple, InputStream input) {

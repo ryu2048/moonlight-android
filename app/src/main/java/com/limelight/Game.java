@@ -13,9 +13,11 @@ import com.limelight.binding.input.virtual_controller.VirtualController;
 import com.limelight.binding.video.CrashListener;
 import com.limelight.binding.video.MediaCodecDecoderRenderer;
 import com.limelight.binding.video.MediaCodecHelper;
+import com.limelight.binding.video.PerfOverlayListener;
 import com.limelight.nvstream.NvConnection;
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.nvstream.StreamConfiguration;
+import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.NvApp;
 import com.limelight.nvstream.input.KeyboardPacket;
 import com.limelight.nvstream.input.MouseButtonPacket;
@@ -78,7 +80,8 @@ import java.util.Locale;
 
 public class Game extends Activity implements SurfaceHolder.Callback,
     OnGenericMotionListener, OnTouchListener, NvConnectionListener, EvdevListener,
-    OnSystemUiVisibilityChangeListener, GameGestures, StreamView.InputCallbacks
+    OnSystemUiVisibilityChangeListener, GameGestures, StreamView.InputCallbacks,
+    PerfOverlayListener
 {
     private int lastMouseX = Integer.MIN_VALUE;
     private int lastMouseY = Integer.MIN_VALUE;
@@ -112,14 +115,19 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean grabbedInput = true;
     private boolean grabComboDown = false;
     private StreamView streamView;
+
+    private boolean isHidingOverlays;
     private TextView notificationOverlayView;
+    private int requestedNotificationOverlayVisibility = View.GONE;
+    private TextView performanceOverlayView;
 
     private ShortcutHelper shortcutHelper;
 
     private MediaCodecDecoderRenderer decoderRenderer;
     private boolean reportedCrash;
 
-    private WifiManager.WifiLock wifiLock;
+    private WifiManager.WifiLock highPerfWifiLock;
+    private WifiManager.WifiLock lowLatencyWifiLock;
 
     private boolean connectedToUsbDriverService = false;
     private ServiceConnection usbDriverServiceConnection = new ServiceConnection() {
@@ -206,6 +214,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         notificationOverlayView = findViewById(R.id.notificationOverlay);
 
+        performanceOverlayView = findViewById(R.id.performanceOverlay);
+
         inputCaptureProvider = InputCaptureManager.getInputCaptureProvider(this, this);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -228,9 +238,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Make sure Wi-Fi is fully powered up
         WifiManager wifiMgr = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-        wifiLock = wifiMgr.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Limelight");
-        wifiLock.setReferenceCounted(false);
-        wifiLock.acquire();
+        highPerfWifiLock = wifiMgr.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Moonlight High Perf Lock");
+        highPerfWifiLock.setReferenceCounted(false);
+        highPerfWifiLock.acquire();
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            lowLatencyWifiLock = wifiMgr.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "Moonlight Low Latency Lock");
+            lowLatencyWifiLock.setReferenceCounted(false);
+            lowLatencyWifiLock.acquire();
+        }
 
         String host = Game.this.getIntent().getStringExtra(EXTRA_HOST);
         String appName = Game.this.getIntent().getStringExtra(EXTRA_APP_NAME);
@@ -256,10 +272,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
 
-        // Add a launcher shortcut for this PC (forced, since this is user interaction)
+        // Report this shortcut being used
+        ComputerDetails computer = new ComputerDetails();
+        computer.name = pcName;
+        computer.uuid = uuid;
         shortcutHelper = new ShortcutHelper(this);
-        shortcutHelper.createAppViewShortcut(uuid, pcName, uuid, true);
-        shortcutHelper.reportShortcutUsed(uuid);
+        shortcutHelper.reportComputerShortcutUsed(computer);
+        if (appName != null) {
+            // This may be null if launched from the "Resume Session" PC context menu item
+            shortcutHelper.reportGameLaunched(computer, new NvApp(appName, appId, willStreamHdr));
+        }
 
         // Initialize the MediaCodec helper before creating the decoder
         GlPreferences glPrefs = GlPreferences.readPreferences(this);
@@ -279,10 +301,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                 // We must now ensure our display is compatible with HDR10
                 boolean foundHdr10 = false;
-                for (int hdrType : hdrCaps.getSupportedHdrTypes()) {
-                    if (hdrType == Display.HdrCapabilities.HDR_TYPE_HDR10) {
-                        LimeLog.info("Display supports HDR10");
-                        foundHdr10 = true;
+                if (hdrCaps != null) {
+                    // getHdrCapabilities() returns null on Lenovo Lenovo Mirage Solo (vega), Android 8.0
+                    for (int hdrType : hdrCaps.getSupportedHdrTypes()) {
+                        if (hdrType == Display.HdrCapabilities.HDR_TYPE_HDR10) {
+                            foundHdr10 = true;
+                        }
                     }
                 }
 
@@ -301,7 +325,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             willStreamHdr = false;
         }
 
-        decoderRenderer = new MediaCodecDecoderRenderer(prefConfig,
+        // Check if the user has enabled performance stats overlay
+        if (prefConfig.enablePerfOverlay) {
+            performanceOverlayView.setVisibility(View.VISIBLE);
+        }
+
+        decoderRenderer = new MediaCodecDecoderRenderer(
+                this,
+                prefConfig,
                 new CrashListener() {
                     @Override
                     public void notifyCrash(Exception e) {
@@ -316,8 +347,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 tombstonePrefs.getInt("CrashCount", 0),
                 connMgr.isActiveNetworkMetered(),
                 willStreamHdr,
-                glPrefs.glRenderer
-                );
+                glPrefs.glRenderer,
+                this);
 
         // Don't stream HDR if the decoder can't support it
         if (willStreamHdr && !decoderRenderer.isHevcMain10Hdr10Supported()) {
@@ -391,7 +422,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         StreamConfiguration config = new StreamConfiguration.Builder()
                 .setResolution(prefConfig.width, prefConfig.height)
                 .setRefreshRate(prefConfig.fps)
-                .setApp(new NvApp(appName, appId, willStreamHdr))
+                .setApp(new NvApp(appName != null ? appName : "app", appId, willStreamHdr))
                 .setBitrate(prefConfig.bitrate)
                 .setEnableSops(prefConfig.enableSops)
                 .enableLocalAudioPlayback(prefConfig.playHostAudio)
@@ -465,15 +496,34 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (virtualController != null) {
             // Refresh layout of OSC for possible new screen size
             virtualController.refreshLayout();
+        }
 
-            // Hide OSC in PiP
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                if (isInPictureInPictureMode()) {
+        // Hide on-screen overlays in PiP mode
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (isInPictureInPictureMode()) {
+                isHidingOverlays = true;
+
+                if (virtualController != null) {
                     virtualController.hide();
                 }
-                else {
+
+                performanceOverlayView.setVisibility(View.GONE);
+                notificationOverlayView.setVisibility(View.GONE);
+            }
+            else {
+                isHidingOverlays = false;
+
+                // Restore overlays to previous state when leaving PiP
+
+                if (virtualController != null) {
                     virtualController.show();
                 }
+
+                if (prefConfig.enablePerfOverlay) {
+                    performanceOverlayView.setVisibility(View.VISIBLE);
+                }
+
+                notificationOverlayView.setVisibility(requestedNotificationOverlayVisibility);
             }
         }
     }
@@ -510,8 +560,17 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // Capture is lost when focus is lost, so it must be requested again
             // when focus is regained.
             if (inputCaptureProvider.isCapturingEnabled() && hasFocus) {
-                // Recapture the pointer if focus was regained
-                streamView.requestPointerCapture();
+                // Recapture the pointer if focus was regained. On Android Q,
+                // we have to delay a bit before requesting capture because otherwise
+                // we'll hit the "requestPointerCapture called for a window that has no focus"
+                // error and it will not actually capture the cursor.
+                Handler h = new Handler();
+                h.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        streamView.requestPointerCapture();
+                    }
+                }, 500);
             }
         }
     }
@@ -702,7 +761,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             inputManager.unregisterInputDeviceListener(controllerHandler);
         }
 
-        wifiLock.release();
+        if (lowLatencyWifiLock != null) {
+            lowLatencyWifiLock.release();
+        }
+        if (highPerfWifiLock != null) {
+            highPerfWifiLock.release();
+        }
 
         if (connectedToUsbDriverService) {
             // Unbind from the discovery service
@@ -1360,10 +1424,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         notificationOverlayView.setText(getResources().getString(R.string.poor_connection_msg));
                     }
 
-                    notificationOverlayView.setVisibility(View.VISIBLE);
+                    requestedNotificationOverlayVisibility = View.VISIBLE;
                 }
                 else if (connectionStatus == MoonBridge.CONN_STATUS_OKAY) {
-                    notificationOverlayView.setVisibility(View.GONE);
+                    requestedNotificationOverlayVisibility = View.GONE;
+                }
+
+                if (!isHidingOverlays) {
+                    notificationOverlayView.setVisibility(requestedNotificationOverlayVisibility);
                 }
             }
         });
@@ -1393,7 +1461,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     public void run() {
                         inputCaptureProvider.enableCapture();
                     }
-                }, 1000);
+                }, 500);
 
                 // Keep the display on
                 getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -1550,5 +1618,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                  (visibility & View.SYSTEM_UI_FLAG_LOW_PROFILE) == 0) {
             hideSystemUi(2000);
         }
+    }
+
+    @Override
+    public void onPerfUpdate(final String text) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                performanceOverlayView.setText(text);
+            }
+        });
     }
 }

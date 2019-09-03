@@ -1,5 +1,7 @@
 # Moonlight Android
 
+[![Travis CI Status](https://travis-ci.org/moonlight-stream/moonlight-android.svg?branch=master)](https://travis-ci.org/moonlight-stream/moonlight-android)
+
 [Moonlight](https://moonlight-stream.org) is an open source implementation of NVIDIA's GameStream, as used by the NVIDIA Shield.
 We reverse engineered the Shield streaming software and created a version that can be run on any Android device.
 
@@ -17,7 +19,7 @@ Check our [wiki](https://github.com/moonlight-stream/moonlight-docs/wiki) for mo
 ## Installation
 
 * Download and install Moonlight for Android from
-[Google Play](https://play.google.com/store/apps/details?id=com.limelight), [Amazon App Store](http://www.amazon.com/gp/product/B00JK4MFN2), or directly from the [releases page](https://github.com/moonlight-stream/moonlight-android/releases)
+[Google Play](https://play.google.com/store/apps/details?id=com.limelight), [F-Droid](https://f-droid.org/packages/com.limelight/), [Amazon App Store](http://www.amazon.com/gp/product/B00JK4MFN2), or directly from the [releases page](https://github.com/moonlight-stream/moonlight-android/releases)
 * Download [GeForce Experience](http://www.geforce.com/geforce-experience) and install on your Windows PC
 
 ## Requirements
